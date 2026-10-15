@@ -26,7 +26,8 @@
                 <data android:host="www.instagram.com" />
                 <data android:host="instagram.com" />
                 <data android:pathPrefix="/reel/" />
-                <data android:pathPrefix="/p/" />
+                <data android:pathPrefix="/reels/" />
+                <data android:pathPrefix="/share/" />
             </intent-filter>
         </activity>
     </application>

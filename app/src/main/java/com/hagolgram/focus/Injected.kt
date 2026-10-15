@@ -1,10 +1,10 @@
 package com.hagolgram.focus
 
 /**
- * Injected into every instagram.com page. Instagram is a single-page app, so this:
- *  - hides the feed posts on Home (story tray stays), the built-in bottom bar, Reels/Explore links and "open app" banners
- *  - blocks navigation to /explore and the /reels/ feed (single reels from DMs still work)
- *  - locks vertical swiping on a single-reel page so it can't turn into an endless reel feed
+ * Injected into every instagram.com page (Messages + Profile tabs). Instagram is a single-page app, so this:
+ *  - sends every tap on a reel (in a chat, on a profile) to OUR native single-reel player (HF.reel)
+ *  - blocks /explore and the /reels/ feed
+ *  - hides Instagram's own bottom bar, Reels/Explore links, "Instagram Lite / open app" banners and nag dialogs
  * It is safe to inject many times.
  */
 const val INJECT_JS = """
@@ -16,22 +16,24 @@ const val INJECT_JS = """
 
   var st = document.createElement('style');
   st.textContent = 'html.hf-home article{display:none!important}' +
-                   'a[href="/reels/"],a[href="/reels"],a[href^="/explore"]{display:none!important}';
+    'a[href="/reels/"],a[href="/reels"],a[href^="/explore"]{display:none!important}' +
+    'a[href*="play.google.com"],a[href*="instagram.com/download"]{display:none!important}';
   root.appendChild(st);
 
   var rxBlock = /^\/(explore(\/|$)|reels\/?$)/;
-  var rxReel = /^\/(reels?\/[^\/]+\/?|[^\/]+\/reel\/[^\/]+\/?)$/;
-  var guarding = false;
+  var rxCode = /^\/(?:[^\/]+\/)?reels?\/([A-Za-z0-9_-]{5,})\/?$/;
+  function reelCode(p) { var m = rxCode.exec(p); return (m && m[1] !== 'audio') ? m[1] : null; }
 
+  var guarding = false;
+  function back() { if (history.length > 1) history.back(); else location.replace('/direct/inbox/'); }
   function guard() {
-    var p = location.pathname, cl = document.documentElement.classList;
-    cl.toggle('hf-home', p === '/');
-    cl.toggle('hf-reel', rxReel.test(p));
-    if (rxBlock.test(p) && !guarding) {
-      guarding = true;
-      if (history.length > 1) history.back(); else location.replace('/');
-      setTimeout(function () { guarding = false; }, 900);
-    }
+    var p = location.pathname;
+    document.documentElement.classList.toggle('hf-home', p === '/');
+    if (guarding) return;
+    var c = reelCode(p);
+    if (c) { guarding = true; if (window.HF) HF.reel(c); back(); }
+    else if (rxBlock.test(p)) { guarding = true; back(); }
+    if (guarding) setTimeout(function () { guarding = false; }, 1200);
   }
   ['pushState', 'replaceState'].forEach(function (k) {
     var o = history[k];
@@ -41,27 +43,23 @@ const val INJECT_JS = """
   setInterval(guard, 500);
   guard();
 
-  // never follow links to the Reels feed / Explore
   document.addEventListener('click', function (e) {
     var a = e.target && e.target.closest ? e.target.closest('a') : null;
     if (!a) return;
     var h = a.getAttribute('href') || '';
-    if (/^(https?:\/\/[^\/]*instagram\.com)?\/(explore|reels\/?$)/.test(h)) { e.preventDefault(); e.stopPropagation(); }
+    var path = h.replace(/^https?:\/\/[^\/]*instagram\.com/, '').split('?')[0];
+    var c = reelCode(path);
+    if (c) { e.preventDefault(); e.stopPropagation(); if (window.HF) HF.reel(c); return; }
+    if (rxBlock.test(path)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-
-  // single reel page: no vertical swiping to the next reel (comments / inputs still scroll)
-  document.addEventListener('touchmove', function (e) {
-    if (!document.documentElement.classList.contains('hf-reel')) return;
-    var t = e.target;
-    if (t && t.closest && t.closest('[role="dialog"],textarea,input,[contenteditable="true"]')) return;
-    e.preventDefault();
-  }, { passive: false, capture: true });
 
   function hideFixed(el) {
     var n = el;
     while (n && n !== document.body && n !== document.documentElement) {
       var pos = getComputedStyle(n).position;
-      if (pos === 'fixed' || pos === 'sticky') { n.style.setProperty('display', 'none', 'important'); return true; }
+      if (pos === 'fixed' || pos === 'sticky') {
+        if (n.getBoundingClientRect().height < 220) { n.style.setProperty('display', 'none', 'important'); return true; }
+      }
       n = n.parentElement;
     }
     return false;
@@ -70,7 +68,7 @@ const val INJECT_JS = """
   function dismiss(n) {
     var d = (n.matches && n.matches('[role="dialog"]')) ? n : (n.querySelector ? n.querySelector('[role="dialog"]') : null);
     if (!d) return;
-    if (!/Turn on Notifications|Add Instagram to your Home screen|Use the App/i.test(d.textContent || '')) return;
+    if (!/Turn on Notifications|Add Instagram to your Home screen|Use the App|Instagram Lite/i.test(d.textContent || '')) return;
     var bs = d.querySelectorAll('button');
     for (var i = 0; i < bs.length; i++) {
       if (/not now|cancel|close/i.test(bs[i].textContent || '')) { bs[i].click(); break; }
@@ -84,10 +82,12 @@ const val INJECT_JS = """
       var a = as[i];
       if (a.__hf) continue;
       var h = a.getAttribute('href') || '';
-      if (h === '/reels/' || h === '/reels' || /^\/explore/.test(h)) { a.__hf = 1; hideFixed(a); }
+      if (h === '/reels/' || h === '/reels' || /^\/explore/.test(h) || /play\.google\.com|instagram\.com\/download/.test(h)) {
+        a.__hf = 1; hideFixed(a);
+      }
     }
     var t = n.textContent || '';
-    if (t.length < 40 && /^\s*(open app|get app|use the app|open instagram|get instagram)\s*$/i.test(t)) hideFixed(n);
+    if (t.length < 160 && /instagram lite|use the app|get the app|download the app|open app|open instagram|get instagram|open in app/i.test(t)) hideFixed(n);
     dismiss(n);
   }
 
