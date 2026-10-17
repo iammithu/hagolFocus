@@ -21,6 +21,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -36,6 +37,7 @@ import kotlin.math.max
 interface Host {
     fun api(path: String, post: Boolean, cb: (String) -> Unit)
     fun closeOverlay()
+    fun openProfile(username: String)
 }
 
 interface Viewer {
@@ -107,7 +109,30 @@ class ReelViewer(private val ctx: Context, private val code: String, private val
             override fun onPlayerError(error: PlaybackException) { fallbackEmbed() }
         })
 
-        tapLayer.setOnClickListener { toggle() }
+        // tap = pause/play, drag down = close (never "next reel")
+        var downY = 0f
+        var dragging = false
+        tapLayer.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { downY = e.rawY; dragging = false }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = e.rawY - downY
+                    if (dy > ctx.dp(12)) {
+                        dragging = true
+                        translationY = dy
+                        alpha = 1f - (dy / (height * 1.5f)).coerceIn(0f, 0.5f)
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (dragging) {
+                        if (translationY > ctx.dp(140)) host.closeOverlay()
+                        else animate().translationY(0f).alpha(1f).setDuration(150).start()
+                    } else toggle()
+                }
+                MotionEvent.ACTION_CANCEL -> if (dragging) animate().translationY(0f).alpha(1f).setDuration(150).start()
+            }
+            true
+        }
         addView(tapLayer, LayoutParams(MATCH, MATCH))
 
         addView(View(ctx).apply { background = scrim() }, LayoutParams(MATCH, ctx.dp(240), Gravity.BOTTOM))
@@ -176,6 +201,7 @@ class ReelViewer(private val ctx: Context, private val code: String, private val
 
     private fun play(i: ReelInfo) {
         userTv.text = if (i.user.isEmpty()) "" else "@" + i.user
+        userTv.setOnClickListener { if (i.user.isNotEmpty()) host.openProfile(i.user) }
         capTv.text = i.caption
         exo.setMediaItem(MediaItem.fromUri(i.url))
         exo.prepare()
@@ -201,6 +227,7 @@ class ReelViewer(private val ctx: Context, private val code: String, private val
     private fun showWeb() {
         spinner.visibility = View.GONE
         tapLayer.visibility = View.GONE
+        Toast.makeText(ctx, "Couldn't get the video file, showing Instagram's embed", Toast.LENGTH_LONG).show()
         val w = WebView(ctx)
         w.settings.javaScriptEnabled = true
         w.settings.domStorageEnabled = true
@@ -331,6 +358,7 @@ class StoryViewer(private val ctx: Context, private val host: Host, private val 
         texts.addView(nameTv)
         texts.addView(timeTv, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { leftMargin = ctx.dp(8) })
         header.addView(texts, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = ctx.dp(10) })
+        header.setOnClickListener { host.openProfile(trays[ti].username) }
         addView(header, LayoutParams(MATCH, LayoutParams.WRAP_CONTENT, Gravity.TOP).apply {
             leftMargin = ctx.dp(12); rightMargin = ctx.dp(56); topMargin = ctx.dp(20)
         })

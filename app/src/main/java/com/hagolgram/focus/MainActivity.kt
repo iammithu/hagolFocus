@@ -49,6 +49,20 @@ class MainActivity : ComponentActivity(), Host {
         val BLOCK = Regex("^/(explore(/.*)?|reels/?)$")
     }
 
+    private val reelRx = Regex("^/(?:[^/]+/)?reels?/([A-Za-z0-9_-]{5,})/?$")
+    private var lastReelCode = ""
+    private var lastReelAt = 0L
+
+    /** If this URL is a single-reel page on instagram.com, returns the reel's shortcode. */
+    private fun reelCodeOf(url: String?): String? {
+        if (url == null) return null
+        val u = Uri.parse(url)
+        val host = u.host ?: return null
+        if (!(host == "instagram.com" || host.endsWith(".instagram.com"))) return null
+        val m = reelRx.find(u.path ?: "") ?: return null
+        return m.groupValues[1].takeIf { it != "audio" }
+    }
+
     private val webs = arrayOfNulls<WebView>(3)
     private val pages = arrayOfNulls<View>(3)
     private val icons = arrayOfNulls<ImageView>(3)
@@ -159,7 +173,7 @@ class MainActivity : ComponentActivity(), Host {
     }
 
     override fun onDestroy() {
-        closeOverlay()
+        closeOverlayNow()
         for (w in webs) w?.destroy()
         super.onDestroy()
     }
@@ -240,19 +254,45 @@ class MainActivity : ComponentActivity(), Host {
     }
 
     private fun showOverlay(v: View) {
-        closeOverlay()
+        closeOverlayNow()
         overlay = v
         frame.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
+        v.translationY = frame.height.toFloat()
+        v.animate().translationY(0f).setDuration(200).start()
     }
 
+    /** Silence the viewer at once, slide it away, then free it. */
     override fun closeOverlay() {
+        val v = overlay ?: return
+        overlay = null
+        (v as? Viewer)?.pause()
+        v.animate().translationY(frame.height.toFloat()).alpha(0f).setDuration(180).withEndAction {
+            (v as? Viewer)?.release()
+            frame.removeView(v)
+        }.start()
+    }
+
+    private fun closeOverlayNow() {
         val v = overlay ?: return
         overlay = null
         (v as? Viewer)?.release()
         frame.removeView(v)
     }
 
+    override fun openProfile(username: String) {
+        closeOverlay()
+        select(2)
+        webs[2]?.loadUrl("$BASE/$username/")
+    }
+
+    /** One reel, one player. Ignores duplicate triggers (page script + navigation hook fire together). */
     private fun openReel(code: String) {
+        val now = System.currentTimeMillis()
+        if (code == lastReelCode && now - lastReelAt < 1500) return
+        lastReelCode = code
+        lastReelAt = now
+        // make sure nothing else is playing sound underneath
+        webs[current]?.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){v.pause()})", null)
         showOverlay(ReelViewer(this, code, this).also { it.start() })
     }
 
@@ -353,8 +393,16 @@ class MainActivity : ComponentActivity(), Host {
                 return true
             }
             if (!allowedHost(host)) { openExternal(u); return true }
+            reelCodeOf(u.toString())?.let { openReel(it); return true }          // a reel link: native player, never the web reel page
             if (BLOCK.matches(u.path ?: "")) return true                        // no Explore / Reels feed
             return false
+        }
+
+        // fires for in-page navigation too: second safety net in case the page script doesn't catch a reel tap
+        override fun doUpdateVisitedHistory(v: WebView, url: String?, isReload: Boolean) {
+            val code = reelCodeOf(url) ?: return
+            openReel(code)
+            v.postDelayed({ if (reelCodeOf(v.url) != null && v.canGoBack()) v.goBack() }, 600)
         }
 
         override fun onPageStarted(v: WebView, url: String?, favicon: Bitmap?) {
